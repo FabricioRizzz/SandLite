@@ -28,7 +28,7 @@ namespace SandLite
 
     class Game
     {
-        public string AppId, Name;
+        public string AppId, Name, Dir;
         public override string ToString() { return Name; }
     }
 
@@ -153,7 +153,8 @@ namespace SandLite
                         var id = Regex.Match(t, "\"appid\"\\s+\"(\\d+)\"").Groups[1].Value;
                         var name = Regex.Match(t, "\"name\"\\s+\"([^\"]+)\"").Groups[1].Value;
                         if (id == "" || name.StartsWith("Steamworks") || name.StartsWith("Proton") || !seen.Add(id)) continue;
-                        games.Add(new Game { AppId = id, Name = name });
+                        var dir = Regex.Match(t, "\"installdir\"\\s+\"([^\"]+)\"").Groups[1].Value;
+                        games.Add(new Game { AppId = id, Name = name, Dir = dir == "" ? null : System.IO.Path.Combine(apps, "common", dir) });
                     }
                     catch { }
                 }
@@ -162,14 +163,23 @@ namespace SandLite
             return games;
         }
 
-        public static string GameIcon(string appId)
+        // ícone do jogo: o que a Steam registra no Windows; se não houver, o .exe do jogo
+        public static string GameIcon(Game g)
         {
             foreach (var root in new[] { @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App ",
                                          @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Steam App " })
             {
-                var icon = Registry.GetValue(root + appId, "DisplayIcon", null) as string;
+                var icon = Registry.GetValue(root + g.AppId, "DisplayIcon", null) as string;
                 if (icon != null && File.Exists(icon.Trim('"'))) return icon.Trim('"');
             }
+            try
+            {
+                if (g.Dir != null && Directory.Exists(g.Dir))
+                    return Directory.GetFiles(g.Dir, "*.exe", SearchOption.AllDirectories)
+                        .Where(f => !Regex.IsMatch(System.IO.Path.GetFileName(f), "crash|unins|setup|redist|launcher|helper|report|vc_|dxsetup|eac|battleye", RegexOptions.IgnoreCase))
+                        .OrderByDescending(f => new FileInfo(f).Length).FirstOrDefault();
+            }
+            catch { }
             return null;
         }
     }
@@ -213,7 +223,9 @@ namespace SandLite
                 if (ServiceExists("SbieSvc") || ServiceExists("SbieDrv")) { Log("Já existe um motor instalado; nada a fazer."); return 0; }
                 if (!PackageAvailable()) { Log("Pasta motor não encontrada: " + Package); return 3; }
 
-                foreach (var src in Directory.GetFiles(Package, "*", SearchOption.AllDirectories))
+                // instalado pelo instalador: os arquivos já estão no lugar certo
+                var same = string.Equals(Path.GetFullPath(Package).TrimEnd('\\'), Target, StringComparison.OrdinalIgnoreCase);
+                if (!same) foreach (var src in Directory.GetFiles(Package, "*", SearchOption.AllDirectories))
                 {
                     var dst = Path.Combine(Target, src.Substring(Package.Length).TrimStart('\\'));
                     Directory.CreateDirectory(Path.GetDirectoryName(dst));
@@ -273,6 +285,113 @@ namespace SandLite
         }
     }
 
+    // ---------- instalação completa (usada pelo SandLite-Instalador.exe) ----------
+    static class Setup
+    {
+        public static readonly string InstallDir = Path.Combine(Environment.GetEnvironmentVariable("ProgramW6432") ?? @"C:\Program Files", "SandLite");
+        const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SandLite";
+        static string DesktopLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "SandLite.lnk"); } }
+        static string MenuLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "SandLite.lnk"); } }
+
+        public static bool IsInstalled()
+        {
+            return string.Equals(Path.GetDirectoryName(Application.ExecutablePath).TrimEnd('\\'), InstallDir, StringComparison.OrdinalIgnoreCase);
+        }
+
+        static bool IsAdmin()
+        {
+            return new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent())
+                .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+
+        static void Shortcut(string lnk, string target)
+        {
+            var sc = MainForm.ShellShortcut(lnk);
+            MainForm.Set(sc, "TargetPath", target);
+            MainForm.Set(sc, "WorkingDirectory", Path.GetDirectoryName(target));
+            MainForm.Set(sc, "IconLocation", target + ",0");
+            MainForm.Set(sc, "Description", "SandLite - rode programas e Steams isoladas");
+            sc.GetType().InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+        }
+
+        // chamado pelo instalador depois de copiar os arquivos (já como administrador)
+        public static int PostInstall(bool desktop)
+        {
+            var code = Engine.Install();
+            if (code != 0) return code;
+            var exe = Path.Combine(InstallDir, "SandLite.exe");
+            try
+            {
+                Shortcut(MenuLnk, exe);
+                if (desktop) Shortcut(DesktopLnk, exe);
+                using (var k = Registry.LocalMachine.CreateSubKey(UninstallKey))
+                {
+                    k.SetValue("DisplayName", "SandLite");
+                    k.SetValue("DisplayIcon", exe);
+                    k.SetValue("DisplayVersion", "1.0");
+                    k.SetValue("Publisher", "SandLite");
+                    k.SetValue("InstallLocation", InstallDir);
+                    k.SetValue("UninstallString", "\"" + exe + "\" --desinstalar");
+                    k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                    k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+                    k.SetValue("EstimatedSize", (int)(Directory.GetFiles(InstallDir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length) / 1024), RegistryValueKind.DWord);
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Instalado, mas não consegui criar os atalhos: " + ex.Message, "SandLite"); }
+            return 0;
+        }
+
+        public static int Uninstall()
+        {
+            if (!IsAdmin())
+            {
+                try
+                {
+                    var p = Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--desinstalar") { UseShellExecute = true, Verb = "runas" });
+                    p.WaitForExit();
+                    return p.ExitCode;
+                }
+                catch { return 1; }
+            }
+
+            var f = new Form { Text = "Desinstalar SandLite", ClientSize = new Size(380, 150), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterScreen, MaximizeBox = false, MinimizeBox = false, Font = new Font("Segoe UI", 9.5f) };
+            try { f.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            f.Controls.Add(new Label { Text = "Remover o SandLite, o motor de isolamento e os atalhos de jogos isolados deste PC?", Left = 14, Top = 14, Width = 352, Height = 40 });
+            var data = new CheckBox { Text = "Apagar também os dados das caixas (logins das Steams isoladas)", Left = 14, Top = 60, Width = 352, Height = 36 };
+            var yes = new Button { Text = "Desinstalar", Left = 176, Top = 108, Width = 100, Height = 30, DialogResult = DialogResult.OK };
+            var no = new Button { Text = "Cancelar", Left = 282, Top = 108, Width = 84, Height = 30, DialogResult = DialogResult.Cancel };
+            f.Controls.AddRange(new Control[] { data, yes, no });
+            f.AcceptButton = yes; f.CancelButton = no;
+            if (f.ShowDialog() != DialogResult.OK) return 2;
+
+            var me = Process.GetCurrentProcess().Id;
+            foreach (var p in Process.GetProcessesByName("SandLite")) if (p.Id != me) try { p.Kill(); p.WaitForExit(3000); } catch { }
+
+            Sbie.Find();
+            var startExe = Path.Combine(Engine.Target, "Start.exe");
+            if (Engine.IsOurs()) Engine.Remove();   // nunca mexe num Sandboxie instalado separadamente
+
+            // atalhos: o do app e os de jogos/programas isolados que apontam para o nosso motor
+            foreach (var lnk in new[] { DesktopLnk, MenuLnk }) try { File.Delete(lnk); } catch { }
+            foreach (var dir in new[] { Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory) })
+                foreach (var lnk in Directory.GetFiles(dir, "*.lnk"))
+                    try { if (string.Equals((string)MainForm.Get(MainForm.ShellShortcut(lnk), "TargetPath"), startExe, StringComparison.OrdinalIgnoreCase)) File.Delete(lnk); } catch { }
+
+            try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, false); } catch { }
+            if (data.Checked)
+            {
+                try { Directory.Delete(Engine.SandboxRoot, true); } catch { }
+                try { Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SandLite"), true); } catch { }
+            }
+
+            MessageBox.Show("O SandLite foi removido.", "SandLite", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // apaga a pasta do programa depois que este processo fechar
+            if (IsInstalled())
+                Process.Start(new ProcessStartInfo("cmd.exe", "/c ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"" + InstallDir + "\"") { UseShellExecute = false, CreateNoWindow = true });
+            return 0;
+        }
+    }
+
     // ---------- janela principal ----------
     class MainForm : Form
     {
@@ -297,7 +416,7 @@ namespace SandLite
             MinimumSize = new Size(640, 420);
             StartPosition = FormStartPosition.CenterScreen;
             AllowDrop = true;
-            Icon = MakeAppIcon();
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { Icon = MakeAppIcon(); }
 
             // barra de ferramentas
             var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(6, 2, 6, 2), RenderMode = ToolStripRenderMode.System };
@@ -310,7 +429,13 @@ namespace SandLite
             tools.Items.Add(Btn("Esvaziar caixa", "Apagar tudo que a caixa guardou (logins, saves isolados...)", delegate { EmptyBox(); }));
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(Btn("Fechar tudo", "Fechar todos os programas da caixa selecionada", delegate { TerminateBox(); }));
-            if (Engine.IsOurs())
+            if (Setup.IsInstalled())
+            {
+                var rm = Btn("Desinstalar SandLite", "Remover o SandLite e o motor deste PC", delegate { Elevated("--desinstalar"); });
+                rm.Alignment = ToolStripItemAlignment.Right;
+                tools.Items.Add(rm);
+            }
+            else if (Engine.IsOurs())
             {
                 var rm = Btn("Desinstalar motor", "Remover o motor de isolamento do SandLite deste PC", delegate { RemoveEngine(); });
                 rm.Alignment = ToolStripItemAlignment.Right;
@@ -685,13 +810,16 @@ namespace SandLite
             filter.TextChanged += delegate { fill(); };
             fill();
             var ok = new Button { Text = "Adicionar", Left = 248, Top = 338, Width = 100, Height = 30, DialogResult = DialogResult.OK };
+            var desk = new CheckBox { Text = "Criar atalho na área de trabalho", Left = 12, Top = 343, Width = 230, Checked = true };
             list.DoubleClick += delegate { if (list.SelectedItem != null) { f.DialogResult = DialogResult.OK; } };
-            f.Controls.AddRange(new Control[] { filter, list, ok });
+            f.Controls.AddRange(new Control[] { filter, list, desk, ok });
             f.AcceptButton = ok;
             if (f.ShowDialog(this) != DialogResult.OK) return;
             var game = list.SelectedItem as Game;
             if (game == null) return;
-            AddFav(new Fav { Box = Box(), Name = game.Name, Path = Sbie.SteamExe, Args = "-applaunch " + game.AppId, Icon = Sbie.GameIcon(game.AppId) ?? "" });
+            var fav = new Fav { Box = Box(), Name = game.Name, Path = Sbie.SteamExe, Args = "-applaunch " + game.AppId, Icon = Sbie.GameIcon(game) ?? "" };
+            AddFav(fav);
+            if (desk.Checked) MakeShortcut(fav);
         }
 
         void RunOnce()
@@ -736,13 +864,13 @@ namespace SandLite
 
         // ---------- atalhos ----------
 
-        static object ShellShortcut(string lnk)
+        internal static object ShellShortcut(string lnk)
         {
             var shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
             return shell.GetType().InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
         }
-        static object Get(object o, string p) { return o.GetType().InvokeMember(p, BindingFlags.GetProperty, null, o, null); }
-        static void Set(object o, string p, object v) { o.GetType().InvokeMember(p, BindingFlags.SetProperty, null, o, new[] { v }); }
+        internal static object Get(object o, string p) { return o.GetType().InvokeMember(p, BindingFlags.GetProperty, null, o, null); }
+        internal static void Set(object o, string p, object v) { o.GetType().InvokeMember(p, BindingFlags.SetProperty, null, o, new[] { v }); }
 
         void MakeShortcut(Fav f)
         {
@@ -849,6 +977,8 @@ namespace SandLite
         {
             if (args.Length > 0 && args[0] == "--instalar-motor") { Environment.Exit(Engine.Install()); return; }
             if (args.Length > 0 && args[0] == "--remover-motor") { Environment.Exit(Engine.Remove()); return; }
+            if (args.Length > 0 && args[0] == "--pos-instalar") { Environment.Exit(Setup.PostInstall(!args.Contains("--sem-atalho"))); return; }
+            if (args.Length > 0 && args[0] == "--desinstalar") { Application.EnableVisualStyles(); Environment.Exit(Setup.Uninstall()); return; }
             bool first;
             using (new System.Threading.Mutex(true, "SandLite_unico", out first))
             {
