@@ -1,2 +1,4 @@
-*.exe
-!motor/**
+saida/
+pacote/
+/SandLite.exe
+LEIA-ME.txt
