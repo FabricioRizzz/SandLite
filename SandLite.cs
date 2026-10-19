@@ -429,6 +429,9 @@ namespace SandLite
             tools.Items.Add(Btn("Esvaziar caixa", "Apagar tudo que a caixa guardou (logins, saves isolados...)", delegate { EmptyBox(); }));
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(Btn("Fechar tudo", "Fechar todos os programas da caixa selecionada", delegate { TerminateBox(); }));
+            var about = Btn("Sobre", "Créditos e licença", delegate { About(); });
+            about.Alignment = ToolStripItemAlignment.Right;
+            tools.Items.Add(about);
             if (Setup.IsInstalled())
             {
                 var rm = Btn("Desinstalar SandLite", "Remover o SandLite e o motor deste PC", delegate { Elevated("--desinstalar"); });
@@ -925,6 +928,29 @@ namespace SandLite
             f.Controls.Add(new Label { Text = label, Left = 12, Top = 10, AutoSize = true });
             f.Controls.Add(t); f.Controls.Add(ok); f.AcceptButton = ok;
             return f.ShowDialog(this) == DialogResult.OK ? t.Text.Trim() : null;
+        }
+
+        void About()
+        {
+            var f = new Form { Text = "Sobre o SandLite", ClientSize = new Size(420, 262), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, Font = Font, Icon = Icon };
+            var pic = new PictureBox { Left = 16, Top = 16, Width = 64, Height = 64, SizeMode = PictureBoxSizeMode.Zoom };
+            try { pic.Image = new Icon(Icon, 64, 64).ToBitmap(); } catch { }
+            f.Controls.Add(pic);
+            f.Controls.Add(new Label { Text = "SandLite 1.0", Left = 96, Top = 18, AutoSize = true, Font = new Font("Segoe UI", 14f, FontStyle.Bold) });
+            f.Controls.Add(new Label { Text = "Criado por Fabricio Riz", Left = 98, Top = 52, AutoSize = true });
+            f.Controls.Add(new Label
+            {
+                Text = "O isolamento é feito pelo motor do Sandboxie, projeto de código aberto de David Xanatos (xanasoft.com) e Sandboxie Holdings, LLC, distribuído sem modificações sob a licença GNU GPL v3.",
+                Left = 16, Top = 96, Width = 388, Height = 64
+            });
+            var l1 = new LinkLabel { Text = "github.com/FabricioRizzz/SandLite", Left = 16, Top = 168, AutoSize = true };
+            l1.LinkClicked += delegate { Process.Start("https://github.com/FabricioRizzz/SandLite"); };
+            var l2 = new LinkLabel { Text = "github.com/sandboxie-plus/Sandboxie", Left = 16, Top = 192, AutoSize = true };
+            l2.LinkClicked += delegate { Process.Start("https://github.com/sandboxie-plus/Sandboxie"); };
+            var ok = new Button { Text = "OK", Left = 320, Top = 220, Width = 84, Height = 30, DialogResult = DialogResult.OK };
+            f.Controls.AddRange(new Control[] { l1, l2, ok });
+            f.AcceptButton = ok;
+            f.ShowDialog(this);
         }
 
         // ---------- motor embutido ----------
