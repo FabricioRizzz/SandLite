@@ -1,0 +1,3 @@
+*.ps1 linguist-detectable=false
+*.bat linguist-detectable=false
+motor/** linguist-vendored
