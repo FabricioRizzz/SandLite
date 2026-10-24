@@ -116,6 +116,29 @@ namespace SandLite
             p.WaitForExit(5000);
         }
 
+        public static string Query(string box, string key)
+        {
+            try
+            {
+                var p = Process.Start(new ProcessStartInfo(IniExe, "query " + box + " " + key) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
+                var o = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(3000);
+                return o;
+            }
+            catch { return ""; }
+        }
+
+        // No Windows 11 o serviço de áudio recusa o microfone para o token restrito
+        // da caixa; com o token original o microfone funciona (arquivos e registro
+        // continuam isolados). Aplica nas caixas criadas por versões anteriores.
+        public static void EnsureMicrophone()
+        {
+            var changed = false;
+            foreach (var b in Boxes())
+                if (Query(b, "OriginalToken") != "y") { Set(b, "OriginalToken", "y"); changed = true; }
+            if (changed) Run("/reload", true);
+        }
+
         public static string BoxFolder(string box)
         {
             string root = null;
@@ -250,6 +273,7 @@ namespace SandLite
                         "Template=SkipHook",
                         "Template=OpenBluetooth",
                         "Template=OpenSmartCard",
+                        "OriginalToken=y",
                         "" }), System.Text.Encoding.Unicode);
 
                 var drv = Path.Combine(Target, "SbieDrv.sys");
@@ -328,7 +352,7 @@ namespace SandLite
                 {
                     k.SetValue("DisplayName", "SandLite");
                     k.SetValue("DisplayIcon", exe);
-                    k.SetValue("DisplayVersion", "1.0");
+                    k.SetValue("DisplayVersion", "1.1");
                     k.SetValue("Publisher", "SandLite");
                     k.SetValue("InstallLocation", InstallDir);
                     k.SetValue("UninstallString", "\"" + exe + "\" --desinstalar");
@@ -533,6 +557,7 @@ namespace SandLite
 
             Load += delegate { main.SplitterDistance = 210; right.SplitterDistance = (int)(right.Height * 0.58); };
 
+            if (Engine.IsOurs()) Sbie.EnsureMicrophone();
             LoadFavs();
             LoadBoxes();
 
@@ -619,6 +644,7 @@ namespace SandLite
                     Sbie.Set(name, "ConfigLevel", "10");
                     Sbie.Set(name, "BlockNetworkFiles", "y");
                     Sbie.Set(name, "BorderColor", "#00FFFF,ttl,6,192");
+                    Sbie.Set(name, "OriginalToken", "y");
                     Sbie.Run("/reload", false);
                 }
                 catch (Exception ex) { MessageBox.Show(this, ex.Message, Text); return; }
@@ -936,7 +962,7 @@ namespace SandLite
             var pic = new PictureBox { Left = 16, Top = 16, Width = 64, Height = 64, SizeMode = PictureBoxSizeMode.Zoom };
             try { pic.Image = new Icon(Icon, 64, 64).ToBitmap(); } catch { }
             f.Controls.Add(pic);
-            f.Controls.Add(new Label { Text = "SandLite 1.0", Left = 96, Top = 18, AutoSize = true, Font = new Font("Segoe UI", 14f, FontStyle.Bold) });
+            f.Controls.Add(new Label { Text = "SandLite 1.1", Left = 96, Top = 18, AutoSize = true, Font = new Font("Segoe UI", 14f, FontStyle.Bold) });
             f.Controls.Add(new Label { Text = "Criado por Fabricio Riz", Left = 98, Top = 52, AutoSize = true });
             f.Controls.Add(new Label
             {
